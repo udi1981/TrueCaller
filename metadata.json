@@ -1,0 +1,5 @@
+{
+  "name": "TrueSummary - Caller ID & Recap",
+  "description": "אפליקציית זיהוי מתקשר המציגה סיכום חכם של השיחה האחרונה עם כל איש קשר.",
+  "requestFramePermissions": ["microphone"]
+}

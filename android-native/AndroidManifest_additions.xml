@@ -1,0 +1,70 @@
+<!--
+  Add these to android/app/src/main/AndroidManifest.xml
+  ───────────────────────────────────────────────────────────────────────────
+  1. Paste the <uses-permission> tags BEFORE <application>
+  2. Paste the <service>/<receiver> tags INSIDE <application>
+-->
+
+<!-- ── Permissions ─────────────────────────────────────────────────────── -->
+
+<uses-permission android:name="android.permission.READ_PHONE_STATE" />
+<uses-permission android:name="android.permission.READ_CALL_LOG" />
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+<uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<!-- Required on Android 14+ for foreground service type "dataSync" -->
+<uses-permission
+    android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
+    android:minSdkVersion="34" />
+<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+<!-- Required on Android 13+ for notifications -->
+<uses-permission
+    android:name="android.permission.POST_NOTIFICATIONS"
+    android:minSdkVersion="33" />
+<!-- Required for full-screen incoming-call overlay on Android 14+ -->
+<uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+<uses-permission android:name="android.permission.INTERNET" />
+<!-- Allows the app to request being excluded from battery optimization (keeps CallService alive) -->
+<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+<!-- Read Samsung call recordings on Android 13+ -->
+<uses-permission android:name="android.permission.READ_MEDIA_AUDIO"
+    android:minSdkVersion="33" />
+<!-- Read Samsung call recordings on Android 9-12 -->
+<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+    android:maxSdkVersion="32" />
+<!-- Look up caller name from device contact book -->
+<uses-permission android:name="android.permission.READ_CONTACTS" />
+
+
+<!-- ── Inside <application> ────────────────────────────────────────────── -->
+
+<!-- CallService: dataSync type — no runtime permissions required, works in Secure Folder too -->
+<service
+    android:name=".CallService"
+    android:exported="false"
+    android:foregroundServiceType="dataSync" />
+
+<!--
+  CallScreeningService: must be exported with the BIND_SCREENING_SERVICE permission.
+  The user must grant ROLE_CALL_SCREENING for this to receive events.
+-->
+<service
+    android:name=".TrueSummaryScreeningService"
+    android:exported="true"
+    android:permission="android.permission.BIND_SCREENING_SERVICE">
+    <intent-filter>
+        <action android:name="android.telecom.CallScreeningService" />
+    </intent-filter>
+</service>
+
+<!-- Auto-start after reboot -->
+<receiver
+    android:name=".BootReceiver"
+    android:exported="true">
+    <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+    </intent-filter>
+</receiver>
+
+<!-- Task reminder notifications via AlarmManager -->
+<receiver android:name=".NotificationReceiver" android:exported="false" />
