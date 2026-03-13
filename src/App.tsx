@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Phone, History, User, MessageSquare, PhoneIncoming, PhoneOutgoing, Mic, Settings, Eye, EyeOff, X, CheckSquare, Check, RotateCcw, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
+import { Phone, History, User, MessageSquare, PhoneIncoming, PhoneOutgoing, Mic, Settings, Eye, EyeOff, X, CheckSquare, Check, RotateCcw, ChevronDown, ChevronUp, Trash2, Share2 } from 'lucide-react';
+import { Share } from '@capacitor/share';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { Capacitor } from '@capacitor/core';
@@ -112,6 +113,8 @@ export default function App() {
   const [chatMessages, setChatMessages]   = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   const [contactView, setContactView]     = useState<{ phone: string; name: string } | null>(null);
   const [contactCalls, setContactCalls]   = useState<Call[]>([]);
+  const [shareMode, setShareMode]         = useState(false);
+  const [selectedCallIds, setSelectedCallIds] = useState<Set<number>>(new Set());
   const [incomingCallHistory, setIncomingCallHistory] = useState<Call[]>([]);
   const [expandedTaskId, setExpandedTaskId]     = useState<number | null>(null);
   const [expandedContactKey, setExpandedContactKey] = useState<string | null>(null);
@@ -191,18 +194,15 @@ export default function App() {
     catch (err) { console.error('loadDoneTasks error:', err); }
   };
 
-  // Group calls by normalized phone number, or caller_name when phone is missing
+  // Group calls by normalized phone number only — never group by AI name to prevent mixing
   const groupedCalls = useMemo(() => {
     const map = new Map<string, Call[]>();
     for (const call of callHistory) {
       let key: string;
       if (call.phone_number) {
         key = normalizePhone(call.phone_number);
-      } else if (call.caller_name && call.caller_name !== 'לא ידוע') {
-        // No phone but AI detected a name — group calls with the same name together
-        key = `__name_${call.caller_name}`;
       } else {
-        // Unknown caller with no phone — keep separate (different people, same label)
+        // No phone number — keep each call isolated to prevent cross-person mixing
         key = `__noPhone_${call.id}`;
       }
       if (!map.has(key)) map.set(key, []);
@@ -221,13 +221,49 @@ export default function App() {
         c => c.phone_number && normalizePhone(c.phone_number) === normPhone
       );
     } else {
-      // No phone number captured — group by caller name as best-effort
-      filtered = callHistoryRef.current.filter(
-        c => !c.phone_number && c.caller_name === name
-      );
+      // No phone number — show only this specific call (don't group by name)
+      filtered = callHistoryRef.current.filter(c => c.caller_name === name && !c.phone_number).slice(0, 1);
     }
     setContactCalls(filtered);
     setContactView({ phone, name });
+    setShareMode(false);
+    setSelectedCallIds(new Set());
+  };
+
+  const toggleShareCallId = (id: number) => {
+    setSelectedCallIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const shareSelectedCalls = async () => {
+    if (!contactView || selectedCallIds.size === 0) return;
+    const selected = contactCalls
+      .filter(c => selectedCallIds.has(c.id))
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    const header = `שיחות עם ${contactView.name}${contactView.phone ? ` (${contactView.phone})` : ''}`;
+    const divider = '──────────────────';
+    const body = selected.map(c => {
+      const { date, time } = formatDateTime(c.created_at);
+      return `${date} ${time}:\n${c.summary}`;
+    }).join('\n\n');
+    const text = `${header}\n${divider}\n\n${body}`;
+
+    try {
+      if (Capacitor.isNativePlatform()) {
+        await Share.share({ text, dialogTitle: 'שיתוף סיכומי שיחות' });
+      } else if (navigator.share) {
+        await navigator.share({ text });
+      } else {
+        await navigator.clipboard.writeText(text);
+        setStatusMessage('הועתק ללוח');
+        setTimeout(() => setStatusMessage(''), 2000);
+      }
+    } catch { /* user cancelled share dialog */ }
+    setShareMode(false);
+    setSelectedCallIds(new Set());
   };
 
   // ── Native call-state handler ──────────────────────────────────────────────
@@ -728,11 +764,15 @@ export default function App() {
     setIsProcessing(true);
     setStatusMessage('שולח לעיבוד Gemini...');
 
-    let number     = incomingNumberRef.current;
-    const name     = incomingNameRef.current;
-    const lastCall = selectedCallRef.current;
-    const recordingTs = callStartTimeMsRef.current; // capture before setTimeout from prior call can zero it
-    const duration = Math.round((Date.now() - recordingTs) / 1000);
+    // Capture ALL refs into locals at entry to prevent race conditions
+    // (a new incoming call could overwrite refs while we're processing)
+    let number          = incomingNumberRef.current;
+    const name          = incomingNameRef.current;
+    const lastCall      = selectedCallRef.current;
+    const recordingTs   = callStartTimeMsRef.current;
+    const duration      = Math.round((Date.now() - recordingTs) / 1000);
+    let capturedContact = contactNameRef.current;
+    const capturedDir   = callDirectionRef.current;
 
     try {
       // Fallback: if phone number is missing, query Android Call Log
@@ -741,7 +781,6 @@ export default function App() {
           const { phoneNumber } = await CallDetector.getCallLogNumber({ dateMs: recordingTs });
           if (phoneNumber) {
             number = normalizePhone(phoneNumber);
-            incomingNumberRef.current = number;
           }
         } catch { /* ignore */ }
       }
@@ -760,27 +799,27 @@ export default function App() {
       setStatusMessage('שומר שיחה...');
 
       // Fallback: if contact name wasn't resolved yet (race condition), try now
-      if (!contactNameRef.current && number) {
+      if (!capturedContact && number) {
         const cn = await lookupContactName(number);
-        if (cn) contactNameRef.current = cn;
+        if (cn) capturedContact = cn;
       }
 
       const { id: callId } = await saveCall({
         phone_number:          number,
-        caller_name:           contactNameRef.current || detectedName,
+        caller_name:           capturedContact || detectedName,
         caller_role:           detectedRole,
         summary,
         transcript,
         duration,
-        call_type:             callDirectionRef.current,
+        call_type:             capturedDir,
         recordingTimestampMs:  recordingTs,
       });
 
       console.log(`[TrueSummary] saveCall done: phone_number=${number}, name=${detectedName}, callId=${callId}`);
 
       // Retroactively update older calls with the same number to use the contact name
-      if (contactNameRef.current && number) {
-        updateCallerNameByPhone(number, contactNameRef.current).catch(() => {});
+      if (capturedContact && number) {
+        updateCallerNameByPhone(number, capturedContact).catch(() => {});
       }
 
       // Save tasks and schedule notifications
@@ -841,10 +880,14 @@ export default function App() {
     setIsProcessing(true);
     setStatusMessage('מעבד נתונים ומסכם...');
 
-    const number   = incomingNumberRef.current;
-    const name     = incomingNameRef.current;
-    const lastCall = selectedCallRef.current;
-    const duration = Math.round((Date.now() - startTimeRef.current) / 1000);
+    // Capture ALL refs into locals at entry to prevent race conditions
+    const number          = incomingNumberRef.current;
+    const name            = incomingNameRef.current;
+    const lastCall        = selectedCallRef.current;
+    const duration        = Math.round((Date.now() - startTimeRef.current) / 1000);
+    const capturedContact = contactNameRef.current;
+    const capturedDir     = callDirectionRef.current;
+    const capturedStartTs = startTimeRef.current;
 
     try {
       const base64data: string = await new Promise((resolve, reject) => {
@@ -866,13 +909,13 @@ export default function App() {
 
       const { id: callId } = await saveCall({
         phone_number:         number,
-        caller_name:          contactNameRef.current || detectedName,
+        caller_name:          capturedContact || detectedName,
         caller_role:          detectedRole,
         summary,
         transcript,
         duration,
-        call_type:            callDirectionRef.current,
-        recordingTimestampMs: startTimeRef.current,
+        call_type:            capturedDir,
+        recordingTimestampMs: capturedStartTs,
       });
 
       if (rawTasks.length > 0) {
@@ -1769,16 +1812,38 @@ export default function App() {
                       </p>
                     </div>
                   </div>
-                  <button
-                    onClick={() => setContactView(null)}
-                    className="w-12 h-12 flex items-center justify-center hover:bg-white/5 rounded-full text-gray-500 transition-colors"
-                  >
-                    <X size={24} />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => { setShareMode(!shareMode); setSelectedCallIds(new Set()); }}
+                      className={cn(
+                        'w-12 h-12 flex items-center justify-center rounded-full transition-colors',
+                        shareMode ? 'bg-blue-600 text-white' : 'hover:bg-white/5 text-gray-500'
+                      )}
+                    >
+                      <Share2 size={20} />
+                    </button>
+                    <button
+                      onClick={() => { setContactView(null); setShareMode(false); setSelectedCallIds(new Set()); }}
+                      className="w-12 h-12 flex items-center justify-center hover:bg-white/5 rounded-full text-gray-500 transition-colors"
+                    >
+                      <X size={24} />
+                    </button>
+                  </div>
                 </div>
 
-                <div className="text-[11px] font-black text-gray-500 uppercase tracking-[0.2em]">
-                  כל השיחות עם איש קשר זה
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] font-black text-gray-500 uppercase tracking-[0.2em]">
+                    {shareMode ? 'בחר שיחות לשיתוף' : 'כל השיחות עם איש קשר זה'}
+                  </div>
+                  {shareMode && selectedCallIds.size > 0 && (
+                    <button
+                      onClick={shareSelectedCalls}
+                      className="flex items-center gap-1.5 bg-blue-600 text-white text-xs font-bold px-4 py-2 rounded-full hover:bg-blue-700 transition-colors"
+                    >
+                      <Share2 size={14} />
+                      שתף ({selectedCallIds.size})
+                    </button>
+                  )}
                 </div>
 
                 {/* Scrollable call list */}
@@ -1786,13 +1851,29 @@ export default function App() {
                   {contactCalls.length > 0 ? (
                     contactCalls.map((call) => {
                       const { date, time } = formatDateTime(call.created_at);
+                      const isSelected = selectedCallIds.has(call.id);
                       return (
                         <div
                           key={call.id}
-                          className="w-full bg-white/[0.03] p-5 rounded-[20px] border border-white/[0.03] text-right space-y-2"
+                          onClick={shareMode ? () => toggleShareCallId(call.id) : undefined}
+                          className={cn(
+                            'w-full p-5 rounded-[20px] border text-right space-y-2 transition-colors',
+                            shareMode ? 'cursor-pointer' : '',
+                            isSelected ? 'bg-blue-600/10 border-blue-500/30' : 'bg-white/[0.03] border-white/[0.03]'
+                          )}
                         >
                           <div className="flex items-center justify-between">
-                            <span className="text-[11px] text-gray-500">{date} • {time} • {formatDuration(call.duration)}</span>
+                            <div className="flex items-center gap-2">
+                              {shareMode && (
+                                <div className={cn(
+                                  'w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-colors',
+                                  isSelected ? 'bg-blue-600 border-blue-600' : 'border-gray-600'
+                                )}>
+                                  {isSelected && <Check size={12} className="text-white" />}
+                                </div>
+                              )}
+                              <span className="text-[11px] text-gray-500">{date} • {time} • {formatDuration(call.duration)}</span>
+                            </div>
                             <span className={`flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full ${call.call_type === 'outgoing' ? 'bg-blue-500/10 text-blue-400' : 'bg-green-500/10 text-green-400'}`}>
                               {call.call_type === 'outgoing'
                                 ? <><PhoneOutgoing size={13} />יוצאת</>

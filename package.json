@@ -16,6 +16,7 @@
     "@capacitor/android": "^7.0.0",
     "@capacitor/core": "^7.0.0",
     "@capacitor/preferences": "^7.0.0",
+    "@capacitor/share": "^7.0.4",
     "@google/genai": "^1.29.0",
     "@tailwindcss/oxide-win32-x64-msvc": "^4.2.1",
     "@tailwindcss/vite": "^4.1.14",

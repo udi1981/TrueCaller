@@ -35,6 +35,18 @@ db.exec(`
 try { db.exec("ALTER TABLE calls ADD COLUMN call_type TEXT NOT NULL DEFAULT 'incoming'"); } catch {}
 try { db.exec("ALTER TABLE calls ADD COLUMN recording_timestamp_ms INTEGER DEFAULT 0"); } catch {}
 
+// One-time migration: normalize stored phone numbers
+try {
+  const rows = db.prepare(
+    "SELECT id, phone_number FROM calls WHERE phone_number IS NOT NULL AND phone_number != '' AND (phone_number LIKE '%-%' OR phone_number LIKE '% %' OR phone_number LIKE '+%')"
+  ).all() as Array<{ id: number; phone_number: string }>;
+  const updateStmt = db.prepare("UPDATE calls SET phone_number = ? WHERE id = ?");
+  for (const row of rows) {
+    const norm = normalizePhone(row.phone_number);
+    if (norm !== row.phone_number) updateStmt.run(norm, row.id);
+  }
+} catch {}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS tasks (
     id           INTEGER  PRIMARY KEY AUTOINCREMENT,
@@ -188,8 +200,9 @@ app.post("/api/save-call", (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     `);
 
+    const normalizedPhone = phone_number ? normalizePhone(phone_number) : '';
     const result = stmt.run(
-      phone_number,
+      normalizedPhone,
       name || "Unknown",
       role || "לא ידוע",
       summary,
@@ -238,7 +251,8 @@ app.post("/api/save-tasks", (req, res) => {
     for (const t of tasks) {
       if (!t.text) continue;
       const due_ts = computeDueTs(t.due_category || 'no_deadline');
-      const result = stmt.run(callId, phone || '', name || '', t.text, t.due_category || 'no_deadline', due_ts);
+      const normPhone = phone ? normalizePhone(phone) : '';
+      const result = stmt.run(callId, normPhone, name || '', t.text, t.due_category || 'no_deadline', due_ts);
       saved.push({
         id: result.lastInsertRowid,
         call_id: callId,

@@ -314,10 +314,14 @@ class CallService : Service() {
                 // On API 31+ TelephonyCallback does not provide the phone number.
                 // TrueSummaryScreeningService saves the real number to SharedPreferences
                 // before TelephonyCallback fires, so we read it as a fallback.
-                // Even if the screening role isn't granted we still show a generic popup.
+                // Validate the timestamp to avoid using stale data from a previous call.
                 val prefs = applicationContext.getSharedPreferences("TrueSummaryPending", android.content.Context.MODE_PRIVATE)
+                val storedNumber = prefs.getString("lastIncomingPhoneNumber", "") ?: ""
+                val storedTimeMs = prefs.getLong("lastIncomingPhoneNumberTimeMs", 0L)
+                val isStale = (System.currentTimeMillis() - storedTimeMs) > 30_000L
                 val resolvedNumber = if (!phoneNumber.isNullOrBlank()) phoneNumber
-                                     else prefs.getString("lastIncomingPhoneNumber", "") ?: ""
+                                     else if (storedNumber.isNotBlank() && !isStale) storedNumber
+                                     else ""
                 OverlayManager.showIncomingCallOverlay(applicationContext, resolvedNumber)
                 showIncomingCallNotification(resolvedNumber)
                 // If number is still empty, retry with CallLog + SharedPrefs fallback
@@ -331,9 +335,17 @@ class CallService : Service() {
             TelephonyManager.CALL_STATE_IDLE    -> {
                 OverlayManager.hideOverlay(applicationContext)
                 cancelIncomingCallNotification()
-                // Clear the stored incoming number so stale data doesn't affect the next call
+                // Clear ALL stored phone data so stale values don't affect the next call
                 applicationContext.getSharedPreferences("TrueSummaryPending", android.content.Context.MODE_PRIVATE)
-                    .edit().remove("lastIncomingPhoneNumber").apply()
+                    .edit()
+                    .remove("lastIncomingPhoneNumber")
+                    .remove("lastIncomingPhoneNumberTimeMs")
+                    .apply()
+                applicationContext.getSharedPreferences("TrueSummary", android.content.Context.MODE_PRIVATE)
+                    .edit()
+                    .remove("last_screened_phone")
+                    .remove("last_screened_phone_time_ms")
+                    .apply()
             }
         }
     }

@@ -109,8 +109,12 @@ class CallDetectorPlugin : Plugin() {
     /** Emit a call-screened event (accurate number from CallScreeningService) to JS. */
     fun notifyCallScreened(phoneNumber: String, direction: String) {
         // Persist so RecordingWatcherPlugin can find the number if filename lacks it
+        // Also store timestamp so consumers can reject stale values
         context.getSharedPreferences("TrueSummary", android.content.Context.MODE_PRIVATE)
-            .edit().putString("last_screened_phone", phoneNumber).apply()
+            .edit()
+            .putString("last_screened_phone", phoneNumber)
+            .putLong("last_screened_phone_time_ms", System.currentTimeMillis())
+            .apply()
 
         val data = JSObject()
         data.put("phoneNumber", phoneNumber)
@@ -260,7 +264,8 @@ class CallDetectorPlugin : Plugin() {
     }
 
     /**
-     * Queries the Android Call Log for a call near [dateMs] (±90 s window).
+     * Queries the Android Call Log for a call near [dateMs] (±30 s window).
+     * Returns the closest match by timestamp to avoid picking the wrong call.
      * Returns { phoneNumber: string } if found, or { phoneNumber: "" } if not.
      */
     @PluginMethod
@@ -268,9 +273,10 @@ class CallDetectorPlugin : Plugin() {
         val dateMs = call.getLong("dateMs") ?: run {
             call.resolve(JSObject().apply { put("phoneNumber", "") }); return
         }
-        val windowMs = 90_000L
+        val windowMs = 30_000L
         Thread {
             var phone = ""
+            var bestDiff = Long.MAX_VALUE
             try {
                 val selection = "${CallLog.Calls.DATE} BETWEEN ? AND ?"
                 val args = arrayOf(
@@ -283,9 +289,16 @@ class CallDetectorPlugin : Plugin() {
                     selection, args,
                     "${CallLog.Calls.DATE} DESC"
                 )?.use { cursor ->
-                    if (cursor.moveToFirst()) {
-                        val num = cursor.getString(0)
-                        if (!num.isNullOrBlank()) phone = num
+                    val numIdx = cursor.getColumnIndex(CallLog.Calls.NUMBER)
+                    val dateIdx = cursor.getColumnIndex(CallLog.Calls.DATE)
+                    while (cursor.moveToNext()) {
+                        val num = cursor.getString(numIdx)
+                        val callDate = cursor.getLong(dateIdx)
+                        val diff = Math.abs(callDate - dateMs)
+                        if (!num.isNullOrBlank() && diff < bestDiff) {
+                            bestDiff = diff
+                            phone = num
+                        }
                     }
                 }
             } catch (_: Exception) { /* permission not granted */ }

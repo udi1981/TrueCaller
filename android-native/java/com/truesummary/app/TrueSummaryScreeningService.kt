@@ -47,7 +47,10 @@ class TrueSummaryScreeningService : CallScreeningService() {
         // the only reliable way to get the real caller number into CallService.
         if (phoneNumber.isNotBlank()) {
             applicationContext.getSharedPreferences("TrueSummaryPending", android.content.Context.MODE_PRIVATE)
-                .edit().putString("lastIncomingPhoneNumber", phoneNumber).apply()
+                .edit()
+                .putString("lastIncomingPhoneNumber", phoneNumber)
+                .putLong("lastIncomingPhoneNumberTimeMs", System.currentTimeMillis())
+                .apply()
         }
 
         // For incoming calls: show overlay + heads-up notification with real phone number.

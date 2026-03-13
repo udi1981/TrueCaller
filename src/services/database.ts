@@ -110,6 +110,29 @@ export async function initDatabase(): Promise<void> {
     await db.execute("ALTER TABLE calls ADD COLUMN recording_timestamp_ms INTEGER DEFAULT 0");
   } catch { /* column already exists on upgrade */ }
   await db.execute(CREATE_TASKS_SQL);
+
+  // One-time migration: normalize all stored phone numbers to canonical format (0XXXXXXXXX)
+  try {
+    const rows = await db.query(
+      "SELECT id, phone_number FROM calls WHERE phone_number IS NOT NULL AND phone_number != '' AND (phone_number LIKE '%-%' OR phone_number LIKE '% %' OR phone_number LIKE '+%')"
+    );
+    for (const row of (rows.values ?? []) as Array<{ id: number; phone_number: string }>) {
+      const norm = normalizePhone(row.phone_number);
+      if (norm !== row.phone_number) {
+        await db.run("UPDATE calls SET phone_number = ? WHERE id = ?", [norm, row.id]);
+      }
+    }
+    // Also normalize tasks table
+    const taskRows = await db.query(
+      "SELECT id, phone_number FROM tasks WHERE phone_number IS NOT NULL AND phone_number != '' AND (phone_number LIKE '%-%' OR phone_number LIKE '% %' OR phone_number LIKE '+%')"
+    );
+    for (const row of (taskRows.values ?? []) as Array<{ id: number; phone_number: string }>) {
+      const norm = normalizePhone(row.phone_number);
+      if (norm !== row.phone_number) {
+        await db.run("UPDATE tasks SET phone_number = ? WHERE id = ?", [norm, row.id]);
+      }
+    }
+  } catch (e) { console.error('[database] phone normalization migration error:', e); }
 }
 
 export async function getRecentCalls(limit = 50): Promise<Call[]> {
@@ -203,12 +226,14 @@ export async function saveCall(params: {
     ? new Date(tsMs).toISOString().replace('T', ' ').replace('Z', '')
     : null;
 
+  const normalizedPhone = params.phone_number ? normalizePhone(params.phone_number) : '';
+
   const result = await conn.run(
     `INSERT INTO calls
        (phone_number, caller_name, caller_role, summary, transcript, duration, call_type, recording_timestamp_ms, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${createdAt ? '?' : "datetime('now','localtime')"})`,
     [
-      params.phone_number,
+      normalizedPhone,
       params.caller_name,
       params.caller_role,
       params.summary,
@@ -322,12 +347,13 @@ export async function saveTasks(
 
   const conn = await ensureDb();
   if (!conn) return [];
+  const normPhone = phone ? normalizePhone(phone) : '';
   for (const t of tasks) {
     const due_ts = computeDueTs(t.due_category);
     const result = await conn.run(
       `INSERT INTO tasks (call_id, phone_number, caller_name, text, due_category, due_ts)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [callId, phone, name, t.text, t.due_category, due_ts]
+      [callId, normPhone, name, t.text, t.due_category, due_ts]
     );
     const id = result.changes?.lastId ?? 0;
     saved.push({

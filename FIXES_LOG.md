@@ -975,3 +975,70 @@ Three root causes:
 2. **CallLog fallback in CallService**: Added `queryCallLogForRecentIncoming()` method + `retryResolveNumber()` with 3 delayed retries (300ms, 800ms, 2000ms) that check SharedPrefs + CallLog. This is a safety net in case the screening role is revoked.
 3. **Note**: CallLog entries are NOT written during RINGING on Samsung — they're written after IDLE. So the CallLog fallback only helps for edge cases, not as a primary mechanism.
 **Status:** DONE
+
+---
+
+## Session 10 — API Key Security + Phone Number Mixing Fix + Share Feature
+
+### [2026-03-13] — Remove hardcoded Gemini API key
+**Files changed:** `src/services/geminiClient.ts`, `src/App.tsx`
+**Problem:** Google Cloud alerted that the Gemini API key was exposed in the GitHub repo (hardcoded as `BUILT_IN_API_KEY`)
+**Fix:**
+1. Removed `BUILT_IN_API_KEY` constant from `geminiClient.ts`; `getApiKey()` now returns empty string when no key in Preferences
+2. Added amber warning banner in App.tsx when no API key is configured (native mode)
+3. Amended git commit and force-pushed to purge key from all git history
+**Status:** DONE
+
+### [2026-03-13] — Normalize phone numbers on INSERT
+**Files changed:** `src/services/database.ts`, `server.ts`
+**Problem:** Same person stored with different phone formats (`052-4455667`, `0524455667`, `+972524455667`) causing fragile grouping
+**Fix:**
+1. `saveCall()` in database.ts: normalize phone_number before INSERT
+2. `saveTasks()` in database.ts: normalize phone param before INSERT
+3. `save-call` endpoint in server.ts: normalize before INSERT
+4. `save-tasks` endpoint in server.ts: normalize before INSERT
+5. One-time migration in `initDatabase()`: SELECT all calls/tasks with non-normalized phones, UPDATE to normalized form
+6. Same migration in server.ts for web-mode DB
+**Status:** DONE
+
+### [2026-03-13] — Fix empty phone number grouping (prevent cross-person mixing)
+**Files changed:** `src/App.tsx`
+**Problem:** When phone_number is empty, calls were grouped by AI-detected `caller_name`. If Gemini detected "דוד" for two unrelated callers, their summaries merged
+**Fix:**
+1. Removed `__name_` fallback in `groupedCalls` useMemo — calls without phone number always get unique keys (`__noPhone_${call.id}`)
+2. `openContactView()`: removed name-based fallback filter; no phone = show single call only
+**Status:** DONE
+
+### [2026-03-13] — Fix ref race condition in processCallAutomatically_fromBase64
+**Files changed:** `src/App.tsx`
+**Problem:** `contactNameRef.current` and `callDirectionRef.current` read mid-function could be overwritten by a new incoming call
+**Fix:** Capture ALL refs into local `const` at function entry: `capturedContact`, `capturedDir`. Use locals throughout instead of re-reading refs. Applied same fix to web-mode `processCallAutomatically()`
+**Status:** DONE
+
+### [2026-03-13] — Tighten CallLog fallback window (90s → 30s)
+**Files changed:** `android-native/CallDetectorPlugin.kt`
+**Problem:** ±90 second window in `getCallLogNumber()` could return wrong number if two calls happened within 90s
+**Fix:** Reduced window to 30s. Also changed from taking first result to finding closest match by timestamp (`bestDiff`)
+**Status:** DONE
+
+### [2026-03-13] — Fix SharedPrefs staleness
+**Files changed:** `android-native/CallDetectorPlugin.kt`, `android-native/CallService.kt`, `android-native/TrueSummaryScreeningService.kt`
+**Problem:** `last_screened_phone` and `lastIncomingPhoneNumber` in SharedPrefs could be stale from a previous call
+**Fix:**
+1. `notifyCallScreened()`: store `last_screened_phone_time_ms` alongside phone number
+2. `TrueSummaryScreeningService`: store `lastIncomingPhoneNumberTimeMs` alongside phone number
+3. `CallService` RINGING: validate SharedPrefs timestamp is < 30s old before using stored number
+4. `CallService` IDLE: clear both `TrueSummaryPending` and `TrueSummary` SharedPrefs stores
+**Status:** DONE
+
+### [2026-03-13] — Add Share feature for call summaries
+**Files changed:** `src/App.tsx`, `package.json`
+**Problem:** No way to share call summaries
+**Fix:**
+1. Installed `@capacitor/share` dependency
+2. Added Share button in Contact Timeline Modal header
+3. Share mode: shows checkboxes on each call summary for multi-select
+4. "שתף (N)" button appears when ≥1 calls selected
+5. Builds text payload with contact name, phone, and selected summaries with dates
+6. Native: uses `@capacitor/share` Share API; Web: uses `navigator.share()` or clipboard fallback
+**Status:** DONE
